@@ -334,8 +334,8 @@ import sqlite3
 import json
 conn = sqlite3.connect('{db_path}')
 c = conn.cursor()
-reddit = c.execute("SELECT COUNT(*) FROM DataEntity WHERE source=2").fetchone()[0]
-x = c.execute("SELECT COUNT(*) FROM DataEntity WHERE source=1").fetchone()[0]
+reddit = c.execute("SELECT COUNT(*) FROM DataEntity WHERE source=1").fetchone()[0]
+x = c.execute("SELECT COUNT(*) FROM DataEntity WHERE source=2").fetchone()[0]
 total = c.execute("SELECT COUNT(*) FROM DataEntity").fetchone()[0]
 # Get DB size
 import os
