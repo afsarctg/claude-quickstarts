@@ -4,7 +4,7 @@ SN13 Diagnostics MCP Server
 ===========================
 
 MCP server providing diagnostic tools for SN13 miner.
-Tools: scan_logs, get_miner_status, lookup_error, check_x_accounts
+Tools: scan_logs, get_miner_status, lookup_error, check_x_accounts, get_data_stats, get_validator_report
 """
 
 import asyncio
