@@ -94,14 +94,14 @@ async def list_tools():
         ),
         Tool(
             name="check_x_accounts",
-            description="Verify X (Twitter) account cookies are valid",
+            description="Check X account health via cookie files + scraping logs (no cold API calls)",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "accounts": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "Account numbers to check (1-8), default all"
+                        "description": "Account numbers to check (1-17), default all"
                     }
                 }
             }
@@ -250,57 +250,76 @@ else:
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     elif name == "check_x_accounts":
-        accounts = arguments.get("accounts", list(range(1, 9)))
+        accounts = arguments.get("accounts", list(range(1, 18)))
         results = []
+
+        # Get recent logs to check actual scraping activity per account
+        logs = get_recent_logs(3000)
 
         for acc_num in accounts:
             suffix = "" if acc_num == 1 else f"_account{acc_num}"
             cookie_file = DATA_UNIVERSE_PATH / f"twitter_cookies{suffix}.json"
 
+            acct_info = {"account": acc_num}
+
+            # 1. Cookie file check
             if not cookie_file.exists():
-                results.append({"account": acc_num, "status": "missing", "file": str(cookie_file)})
+                acct_info.update({"status": "missing", "cookie_file": False})
+                results.append(acct_info)
                 continue
 
-            # Test cookie validity using user() - more reliable than search
-            script = f"""
-import asyncio, json
-from twikit import Client
-async def test():
-    try:
-        c = Client('en-US')
-        c.set_cookies(json.load(open('{cookie_file}')))
-        u = await c.user()
-        return 'valid:' + (u.screen_name if u else 'unknown')
-    except Exception as e:
-        return 'error:' + str(e)[:80]
-print(asyncio.run(test()))
-"""
+            # Cookie file age
             try:
-                test_result = subprocess.run(
-                    [str(DATA_UNIVERSE_PATH / "venv" / "bin" / "python"), "-c", script],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                output = test_result.stdout.strip()
-                if output.startswith("valid:"):
-                    username = output.split(":", 1)[1]
-                    results.append({"account": acc_num, "status": "valid", "username": username})
-                else:
-                    msg = output.split(":", 1)[1] if ":" in output else output
-                    results.append({"account": acc_num, "status": "error", "message": msg})
-            except Exception as e:
-                results.append({"account": acc_num, "status": "error", "message": str(e)[:100]})
+                mtime = os.path.getmtime(cookie_file)
+                age_hours = (datetime.utcnow() - datetime.utcfromtimestamp(mtime)).total_seconds() / 3600
+                acct_info["cookie_file"] = True
+                acct_info["cookie_age_hours"] = round(age_hours, 1)
+            except Exception:
+                acct_info["cookie_file"] = True
+                acct_info["cookie_age_hours"] = None
 
-        valid_count = sum(1 for r in results if r["status"] == "valid")
+            # 2. Log-based activity check
+            # Logs use "X.twikit_account5" in "Scrapers ready" and "Completed scrape" lines
+            acct_tag = f"twikit_account{acc_num}"
+            # Count "Scrapers ready" mentions as scheduling activity
+            scheduled_count = len(re.findall(rf"X\.{acct_tag}", logs))
+            # Count 429 rate limits mentioning this account
+            scrape_429s = len(re.findall(rf"{acct_tag}.*429|Pagination.*429.*{acct_tag}", logs, re.IGNORECASE))
+            # Count auth errors (403/401)
+            scrape_errors = len(re.findall(rf"{acct_tag}.*(403|401|expired|suspended)", logs, re.IGNORECASE))
+
+            scheduled = scheduled_count > 0
+
+            acct_info["log_mentions"] = scheduled_count
+            acct_info["rate_limits"] = scrape_429s
+            acct_info["errors"] = scrape_errors
+            acct_info["scheduled"] = scheduled
+
+            # Determine status from activity
+            if scheduled_count > 0 and scrape_errors == 0:
+                acct_info["status"] = "active"
+            elif scrape_429s > 0:
+                acct_info["status"] = "rate_limited"
+            elif scrape_errors > 0:
+                acct_info["status"] = "error"
+            else:
+                acct_info["status"] = "idle"
+
+            results.append(acct_info)
+
+        active_count = sum(1 for r in results if r.get("status") in ("active", "scheduled"))
+        error_count = sum(1 for r in results if r.get("status") in ("error", "missing"))
         result = {
             "timestamp": datetime.utcnow().isoformat(),
             "accounts": results,
-            "valid": valid_count,
+            "active": active_count,
+            "idle_or_rate_limited": sum(1 for r in results if r.get("status") in ("idle", "rate_limited")),
+            "errors": error_count,
             "total": len(accounts),
-            "overall": "healthy" if valid_count == len(accounts) else (
-                "critical" if valid_count == 0 else "degraded"
-            )
+            "overall": "healthy" if active_count > 0 and error_count == 0 else (
+                "degraded" if active_count > 0 else "critical"
+            ),
+            "note": "Status based on cookie files + actual scraping logs (not cold API calls)"
         }
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
